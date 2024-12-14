@@ -1,4 +1,5 @@
-import gleam/dynamic
+import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
 import gleam/json.{int, object, string, to_string}
 
 pub type Context {
@@ -9,6 +10,10 @@ pub type Context {
     mpesa_consumer_secret: String,
     mpesa_callback_url: String,
   )
+}
+
+pub type AccessToken {
+  AccessToken(access_token: String, expires_in: String)
 }
 
 pub type StkBody {
@@ -31,18 +36,22 @@ pub type StkPush {
   )
 }
 
-pub type AccessToken {
-  AccessToken(access_token: String, expires_in: String)
-}
-
 pub type StkPushResponse {
   StkPushResponse(
     merchant_request_id: String,
     checkout_request_id: String,
-    response_code: Int,
-    response_description: String,
-    customer_message: String,
+    result_code: Int,
+    result_desc: String,
+    callback_metadata: CallbackMetadata,
   )
+}
+
+pub type CallbackMetadata {
+  CallbackMetadata(item: List(Dict(String, Dynamic)))
+}
+
+pub type Item {
+  Item(name: String, value: String)
 }
 
 pub fn decode_token() {
@@ -50,17 +59,6 @@ pub fn decode_token() {
     AccessToken,
     dynamic.field("access_token", dynamic.string),
     dynamic.field("expires_in", dynamic.string),
-  )
-}
-
-pub fn decode_stk_response() {
-  dynamic.decode5(
-    StkPushResponse,
-    dynamic.field("MerchantRequestID", dynamic.string),
-    dynamic.field("CheckoutRequestID", dynamic.string),
-    dynamic.field("ResponseCode", dynamic.int),
-    dynamic.field("ResponseDescription", dynamic.string),
-    dynamic.field("CustomerMessage", dynamic.string),
   )
 }
 

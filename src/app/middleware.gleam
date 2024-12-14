@@ -5,6 +5,7 @@ import gleam/http/request
 import gleam/httpc
 import gleam/json
 import gleam/result
+import gleam/string
 import wisp
 
 pub fn middleware(
@@ -12,7 +13,6 @@ pub fn middleware(
   handle_request: fn(wisp.Request) -> wisp.Response,
 ) -> wisp.Response {
   let req = wisp.method_override(req)
-  use <- wisp.require_content_type(req, "application/json")
   use <- wisp.log_request(req)
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
@@ -21,7 +21,8 @@ pub fn middleware(
 }
 
 pub fn get_auth_token(ctx: Context) -> String {
-  let token = ctx.mpesa_consumer_key <> ":" <> ctx.mpesa_consumer_secret
+  let token =
+    string.concat([ctx.mpesa_consumer_key, ":", ctx.mpesa_consumer_secret])
 
   let auth_key = bit_array.base64_encode(<<token:utf8>>, True)
   let url_path = "https://sandbox.safaricom.co.ke"

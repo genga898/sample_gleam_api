@@ -1,7 +1,6 @@
 import app/middleware.{get_auth_token, middleware}
 import app/types.{type Context}
-import birl
-import dateformat
+import decode/zero
 import gleam/bit_array
 import gleam/http
 import gleam/http/request
@@ -9,8 +8,10 @@ import gleam/httpc
 import gleam/int
 import gleam/io
 import gleam/json.{int, string}
+import gleam/result
 import gleam/string
 import gleam/string_tree
+import tempo/datetime
 import wisp.{type Request, type Response}
 
 pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
@@ -27,15 +28,25 @@ pub fn handle_request(req: wisp.Request, ctx: Context) -> wisp.Response {
 
 pub fn home(req: Request) -> Response {
   use <- wisp.require_method(req, http.Get)
-
-  wisp.json_response(string_tree.from_string("{\"Hello\": \"World\"}"), 200)
+  json.object([#("Hello", string("World"))])
+  |> json.to_string_tree
+  |> wisp.json_response(200)
 }
 
 pub fn stkpush(req: Request, bearer_token: String, ctx: Context) -> Response {
   use <- wisp.require_method(req, http.Post)
+  use <- wisp.require_content_type(req, "application/json")
+  use content <- wisp.require_json(req)
 
-  let assert Ok(timestamp) = dateformat.format("YYYYMMDDHHmmss", birl.now())
-  io.debug
+  let content_decoder = {
+    use amount <- zero.field("amount", zero.int)
+    use phone_no <- zero.field("phone_number", zero.int)
+    zero.success(types.StkBody(amount, phone_no))
+  }
+  let content_result =
+    zero.run(content, content_decoder) |> result.unwrap(types.StkBody(0, 0))
+
+  let timestamp = datetime.now_local() |> datetime.format("YYYYMMDDHHmmss")
   let token =
     string.concat([
       int.to_string(ctx.mpesa_shortcode),
@@ -48,8 +59,9 @@ pub fn stkpush(req: Request, bearer_token: String, ctx: Context) -> Response {
     string.concat([ctx.mpesa_callback_url, "/callback-url-path"])
 
   let password = auth_key
-  let amount = 1
-  let phone_no = 254_768_188_328
+  let contact =
+    int.parse("254" <> int.to_string(content_result.phone_number))
+    |> result.unwrap(0)
   let url_path = "https://sandbox.safaricom.co.ke"
   let stk_push_body =
     types.StkPush(
@@ -57,10 +69,10 @@ pub fn stkpush(req: Request, bearer_token: String, ctx: Context) -> Response {
       password,
       timestamp,
       "CustomerPayBillOnline",
-      amount,
-      phone_no,
+      content_result.amount,
+      contact,
       ctx.mpesa_shortcode,
-      phone_no,
+      contact,
       callback_url,
       "Test",
       "Test",
@@ -79,10 +91,10 @@ pub fn stkpush(req: Request, bearer_token: String, ctx: Context) -> Response {
     Ok(rep) -> {
       wisp.json_response(string_tree.from_string(rep.body), rep.status)
     }
-    Error(_err) -> {
-      json.object([#("Error", json.string("Response error"))])
+    _ -> {
+      json.object([#("Error", json.string("Network error"))])
       |> json.to_string_tree
-      |> wisp.json_response(400)
+      |> wisp.json_response(502)
     }
   }
 }
@@ -92,30 +104,57 @@ pub fn callback_url_path(req: Request) -> Response {
   use <- wisp.require_content_type(req, "application/json")
   use content <- wisp.require_json(req)
   io.debug(content)
-  let stk_response = content |> types.decode_stk_response()
 
-  case stk_response {
-    Ok(t) -> {
-      case t.response_code {
-        0 ->
-          json.object([
-            #("MerchantRequestID", string(t.merchant_request_id)),
-            #("CheckoutRequestID", string(t.checkout_request_id)),
-            #("ResponseCode", int(t.response_code)),
-            #("ResponseDescription", string(t.response_description)),
-            #("CustomerMessage", string(t.customer_message)),
-          ])
-          |> json.to_string_tree
-          |> io.debug
-          |> wisp.json_response(200)
+  let metadata_decoder = {
+    use item <- zero.field(
+      "Item",
+      zero.list(zero.dict(zero.string, zero.dynamic)),
+    )
+    zero.success(types.CallbackMetadata(item))
+  }
 
-        _ ->
-          wisp.json_response(
-            string_tree.from_string(t.response_description),
-            t.response_code,
-          )
-      }
+  let callback_decoder = {
+    use merchant_req_id <- zero.field("MerchantRequestID", zero.string)
+    use checkout_req_id <- zero.field("CheckoutRequestID", zero.string)
+    use result_code <- zero.field("ResultCode", zero.int)
+    use result_desc <- zero.field("ResultDesc", zero.string)
+    use callback_metadata <- zero.optional_field(
+      "CallbackMetadata",
+      types.CallbackMetadata([]),
+      metadata_decoder,
+    )
+
+    zero.success(types.StkPushResponse(
+      merchant_req_id,
+      checkout_req_id,
+      result_code,
+      result_desc,
+      callback_metadata,
+    ))
+  }
+
+  let decoder = zero.at(["Body", "stkCallback"], callback_decoder)
+  let stk_resp =
+    zero.run(content, decoder)
+    |> result.unwrap(types.StkPushResponse(
+      "",
+      "",
+      9999,
+      "",
+      types.CallbackMetadata([]),
+    ))
+
+  case stk_resp.result_code {
+    0 -> {
+      io.debug(stk_resp)
+      wisp.ok()
     }
-    Error(_err) -> wisp.json_response(string_tree.from_string("Error"), 400)
+    1032 -> {
+      io.debug(stk_resp)
+      json.object([#("Ok", json.string(stk_resp.result_desc))])
+      |> json.to_string_tree
+      |> wisp.json_response(200)
+    }
+    _ -> wisp.ok()
   }
 }
